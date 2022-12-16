@@ -79,7 +79,7 @@ func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, 
 	if l.sqlRowFunc != nil {
 		l.sqlRowFunc(sql, rows)
 	}
-	if err != nil {
+	if l.errorFunc != nil && err != nil {
 		l.errorFunc(err)
 	}
 
