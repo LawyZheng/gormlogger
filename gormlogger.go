@@ -12,9 +12,19 @@ const (
 	errStr   string = "[error = %s] [%.3fms] [rows:%v] %s"
 )
 
-type ElapsedTimeFunc func(time.Duration)
-type SqlRowFunc func(string, int64)
-type ErrorFunc func(error)
+type FmtLog func(msg string, data ...interface{})
+
+type TraceTripper func(elapsed time.Duration, fc func() (sql string, row int64), e error) (bool, FmtLog)
+
+func newTraceTripper(logger Logging) TraceTripper {
+	return func(elapsed time.Duration, fc func() (sql string, row int64), e error) (bool, FmtLog) {
+		if e != nil {
+			return true, logger.Errorf
+		} else {
+			return true, logger.Tracef
+		}
+	}
+}
 
 type Logging interface {
 	Tracef(msg string, data ...interface{})
@@ -25,30 +35,19 @@ type Logging interface {
 
 func NewLogger(log Logging) *Logger {
 	return &Logger{
-		Logging: log,
+		Logging:      log,
+		traceTripper: newTraceTripper(log),
 	}
 }
 
 type Logger struct {
 	Logging
 
-	elapsedTimeFunc ElapsedTimeFunc
-	sqlRowFunc      SqlRowFunc
-	errorFunc       ErrorFunc
+	traceTripper TraceTripper
 }
 
-func (l *Logger) SetElapsedTimeFunc(fn ElapsedTimeFunc) *Logger {
-	l.elapsedTimeFunc = fn
-	return l
-}
-
-func (l *Logger) SetSqlRowFunc(fn SqlRowFunc) *Logger {
-	l.sqlRowFunc = fn
-	return l
-}
-
-func (l *Logger) SetErrorFunc(fn ErrorFunc) *Logger {
-	l.errorFunc = fn
+func (l *Logger) SetTraceTripper(tripper TraceTripper) *Logger {
+	l.traceTripper = tripper
 	return l
 }
 
@@ -57,32 +56,31 @@ func (l *Logger) LogMode(level logger.LogLevel) logger.Interface {
 }
 
 func (l *Logger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
+	if l.traceTripper == nil {
+		return
+	}
+
 	elapsed := time.Since(begin)
-	if l.elapsedTimeFunc != nil {
-		l.elapsedTimeFunc(elapsed)
+
+	ok, fn := l.traceTripper(elapsed, fc, err)
+	if !ok || fn == nil {
+		return
 	}
 
 	sql, rows := fc()
 	if rows == -1 {
 		if err != nil {
-			l.Logging.Errorf(errStr, err, float64(elapsed.Nanoseconds())/1e6, "-", sql)
+			fn(errStr, err, float64(elapsed.Nanoseconds())/1e6, "-", sql)
 		} else {
-			l.Logging.Tracef(traceStr, float64(elapsed.Nanoseconds())/1e6, "-", sql)
+			fn(traceStr, float64(elapsed.Nanoseconds())/1e6, "-", sql)
 		}
 	} else {
 		if err != nil {
-			l.Logging.Errorf(errStr, err, float64(elapsed.Nanoseconds())/1e6, rows, sql)
+			fn(errStr, err, float64(elapsed.Nanoseconds())/1e6, rows, sql)
 		} else {
-			l.Logging.Tracef(traceStr, float64(elapsed.Nanoseconds())/1e6, rows, sql)
+			fn(traceStr, float64(elapsed.Nanoseconds())/1e6, rows, sql)
 		}
 	}
-	if l.sqlRowFunc != nil {
-		l.sqlRowFunc(sql, rows)
-	}
-	if l.errorFunc != nil && err != nil {
-		l.errorFunc(err)
-	}
-
 }
 
 func (l *Logger) Info(ctx context.Context, msg string, data ...interface{}) {
